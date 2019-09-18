@@ -145,6 +145,7 @@ __all__ = [
     'rename_fields',
     'rename_tables',
     'rename_models',
+    'rename_models_reference',
     'rename_xmlids',
     'add_xmlid',
     'chunked',
@@ -785,6 +786,46 @@ def rename_models(cr, model_spec):
                 )
 
     # TODO: signal where the model occurs in references to ir_model
+
+
+def rename_models_reference(env, model_spec):
+    """Rename the models in the reference fields.
+    :param env: Environment/pool variable.
+    :param model_spec: a list of tuples (old model name, new model name).
+    """
+    cr = env.cr
+    for (old, new) in model_spec:
+        cr.execute("""
+             SELECT model, name
+             FROM ir_model_fields
+             WHERE ttype='reference'
+             """)
+        rows = cr.fetchall()
+        if ('ir.property', 'value_reference') not in rows:
+            rows.append(('ir.property', 'value_reference'))
+        for row in rows:
+            try:
+                model = env[row[0]]
+            except KeyError:
+                continue
+            if not model._auto:  # Discard SQL views
+                continue
+            table = model._table
+            if not table_exists(cr, table):
+                continue
+            column = row[1]
+            if not column_exists(cr, table, column):
+                continue
+            logged_query(
+                cr, """
+                 UPDATE %s
+                 SET %s = replace(%s, %s, %s)
+                 WHERE %s LIKE '%s,%%'
+                 """, (
+                    AsIs(table), AsIs(column), AsIs(column),
+                    old + ',', new + ',', AsIs(column), AsIs(old),
+                ), skip_no_result=True,
+            )
 
 
 def rename_xmlids(cr, xmlids_spec):
