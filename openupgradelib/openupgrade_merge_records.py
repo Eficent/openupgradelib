@@ -248,26 +248,78 @@ def _change_translations_orm(env, model_name, record_ids, target_record_id,
             records = records[1:]
         if records:
             records.unlink()
-            logger.debug("Deleted %s extra translations for %s.",
-                         len(records), group['name'])
+            logger.debug("Deleted %s extra translations for %s (lang = %s).",
+                         len(records), group['name'], group['lang'])
 
 
 def _change_translations_sql(env, model_name, record_ids, target_record_id,
                              exclude_columns):
     if ('ir_translation', 'res_id') in exclude_columns:
         return
-    # TODO: To be handled with the same approach as in ORM method
-    logged_query(
-        env.cr,
+    env.cr.execute(
         """
-        UPDATE ir_translation SET res_id = %(target_record_id)s
+        SELECT name, lang
+        FROM ir_translation
         WHERE type = 'model' AND res_id in %(record_ids)s
-        AND name like %(model_name)s || ',%%'""",
+            AND name like %(model_name)s || ',%%'
+        GROUP BY name, lang""",
         {
-            'target_record_id': target_record_id,
             'record_ids': record_ids,
             'model_name': model_name,
-        }, skip_no_result=True)
+        }
+    )
+    groups = env.cr.fetchall()
+    for group in groups:
+        name, lang = group[0], group[1]
+        env.cr.execute(
+            """
+            SELECT id
+            FROM ir_translation
+            WHERE type = 'model' AND name = %(name)s AND lang = %(lang)s
+                AND res_id = %(target_record_id)s""",
+            {
+                'target_record_id': target_record_id,
+                'lang': lang,
+                'name': name,
+            }
+        )
+        target_translation = env.cr.fetchone()
+        env.cr.execute(
+            """
+            SELECT id
+            FROM ir_translation
+            WHERE type = 'model' AND res_id in %(record_ids)s
+                AND name = %(name)s AND lang = %(lang)s""",
+            {
+                'record_ids': record_ids,
+                'lang': lang,
+                'name': name,
+            }
+        )
+        records = env.cr.fetchall()
+        if not target_translation and records:
+            # There is no target translation, we pick one for being the new one
+            record_id = records[0][0]
+            logged_query(
+                env.cr,
+                """
+                UPDATE ir_translation SET res_id = %(target_record_id)s
+                WHERE id = %(record_id)s""",
+                {
+                    'target_record_id': target_record_id,
+                    'record_id': record_id,
+                }, skip_no_result=True)
+            records = records[1:]
+        if records:
+            env.cr.execute(
+                """
+                DELETE FROM ir_translation
+                WHERE id in %(record_ids)s""",
+                {
+                    'record_ids': tuple([t[0] for t in records]),
+                })
+            logger.debug("Deleted %s extra translations for %s (lang = %s).",
+                         len(records), name, lang)
 
 
 def _adjust_merged_values_orm(env, model_name, record_ids, target_record_id,
